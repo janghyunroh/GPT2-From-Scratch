@@ -1,4 +1,4 @@
-from dataclass import dataclass
+from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -141,7 +141,7 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
 
         # 두번째 layer norm 
-        self.ln2 = nn.LayerNorm(config.n_embd)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
 
         # feed forward layer
         # 단순 매핑(map)
@@ -184,8 +184,9 @@ class GPTConfig:
     n_embd: int = 384
 
 # GPT class
-class GPT(nn.module):
+class GPT(nn.Module):
 
+    # 클래스 생성자자
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -215,15 +216,27 @@ class GPT(nn.module):
         # 이 값을 softmax에 통과시켜 각 토큰 별 확률로 변환
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+    
+    # forward 함수 정의
+    def forward(self, idx): #idx: (B, T) shape의 입력
+        
+        # 입력 크기
+        B, T = idx.size()
+
+        # Block Size에 맞게 입력이 들어왔는지 확인
+        assert T <= self.config.block_size, f"{T}길이의 시퀀스는 Forwarding이 불가능합니다. Block size는 {self.config.block_size}이며 입력은 이보다 작아야 합니다. "
+
+
 
     # pre-train 가중치 불러오는 함수
     # 길긴 하지만 GPT 공부에 그리 중요한 코드는 아닙니다. 
+    # model_type이 주어진 경우의 GPT 모델 생성자. 
     @classmethod
     def from_pretrained(cls, model_type):
         """HuggingFace의 GPT-2 모델 가중치를 로드합니다."""
 
         # 우리가 불러올 모델 타입이 이 중에 해당하는지 확인
-        assert model_type in {'gpt-2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
 
         from transformers import GPT2LMHeadModel
         print(f'pre-trained gpt {model_type}(으)로부터 가중치 로드 중...')
@@ -236,8 +249,75 @@ class GPT(nn.module):
             'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600),
         }[model_type]
 
+        # 50000 + 256 + 1
+        # 50000: 50000개로 압축
+        # 256: byte fallback 위한 자리
+        # 1 : 특수 토큰 <|endoftext|> 자리
         config_args['vocab_size'] = 50257
         config_args['block_size'] = 1024
 
         # 위 설정변수를 이용해 GPT 모델 생성
         config = GPTConfig(**config_args) # 
+        model = GPT(config)
+
+        # ------------ state_dict 복사해오기(일부 버퍼 제외) ------------
+
+        # 우리 모델을 위한 state_dict
+        sd = model.state_dict()
+        sd_keys = sd.keys()
+
+        # 생성한 dict 원소 중 attn_bias는 우리가 직접 만들었으므로 제외. 
+        sd_keys = [k for k in sd_keys if not k.endswith('attn.bias')]
+
+        # HuggingFace의 GPT 모델 로드 
+        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+        
+        # HuggingFace 모델의 state_dict
+        sd_hf = model_hf.state_dict()
+
+        # HuggingFace model의 state_dict를 우리 모델의 state_dict로 복사
+        sd_keys_hf = sd_hf.keys()
+        
+        # 마스킹 테이블 제외
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('attn.masked_bias')]
+        
+        # 얘도 같은 이유로 제외
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('attn.bias')]
+
+        # ------------ 추가 작업: transpose 된 weight 되돌리기 ------------
+        # HuggingFace에선 tensorflow로 개발되어 있어서 
+        # pytorch와 비교했을 때 transpose되어 있는 가중치가 있음!(Conv1D 모듈 때문)
+        # 이를 pytorch에 맞게 하기 위해 일부 weight 전치시키기
+
+        # 하드코딩으로 직접 전치할 가중치 선택
+        transposed = [
+            'attn.c_attn.weight',
+            'attn.c_proj.weight',
+            'mlp.c_fc.weight',
+            'mlp.c_proj.weight'
+        ]
+
+        assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
+        
+        # state_dict의 각 원소 복사
+        for k in sd_keys_hf:
+
+            # 뒤집어야 하는 가중치의 경우
+            if any(k.endswith(w) for w in transposed):
+
+                assert sd_hf[k].shape[::-1] == sd[k].shape
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k].t()) # 뒤집어서 복사
+            
+            # 안 뒤집어도 되는 경우 
+            else:
+                assert sd_hf[k].shape == sd[k].shape
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k]) # 그대로 복사
+
+        
+        return model
+
+
+model = GPT.from_pretrained('gpt2')
+print('완료!')
