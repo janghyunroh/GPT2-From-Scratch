@@ -2,6 +2,130 @@ from dataclass import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import math
+
+
+# GPT
+# - 토큰 임베딩
+# - 위치 임베딩
+# - 디코더 블럭 x 6
+#   - layerNorm
+#   - 어텐션
+#   - MLP
+# - Linear
+# - SoftMax
+
+
+# Decoder의 Attention Layer Class
+class CausalSelfAttention(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+
+        # head 개수만큼 임베딩 벡터를 쪼갤 수 있는지 확인
+        assert config.n_embd % config.n_head == 0
+
+        # q, k, v 벡터를 그냥 한번에 이어서 만들어버리는 레이어
+        # 이후 이 레이어로 만든 벡터를 3등분해서 각각 q, k, v로 쓸 예정
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+
+        # output projection
+        # 
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+
+        # regularization
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+
+        # Decoder 생성을 위한 마스킹
+        # register_buffer 함수: forward처럼 pytorch nn.Module에 처음부터 존재하는 요소.
+        # 모델 내부적으로 가지고 있으면서, 학습은 필요없는 텐서를 저장하는데에 주로 쓰임. 
+        # 여기서는 마스킹 텐서를 저장
+        # 왜 이름을 bias로 지었는지는 의문임(그냥 논문에서 그렇게 지음)
+        self.register_buffer('bias', torch.tril(torch.ones(config.block_size, config.block_size))
+                             .view(1, 1, config.block_size, config.block_size))
+
+
+    def forward(self, x):
+
+        # 입력 텐서의 shape: Batch x Sequence len x Channel(토큰 별 임베딩 벡터 크기)
+        # x : (B, T, C)
+        B, T, C = x.size()
+
+        qkv = self.c_attn(x) # qkv : (B, T, 3C)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+
+        # C를 n_head개만큼 쪼개기. 
+        # (B, T, C)였던 놈의 C를 n_head개만큼 쪼개 (B, T, hs)가 nh개 있다고 생각하는게 좋음
+        # (C = nh x hs)
+
+        # 단, 실제로는 연산을 위해 shape을 (B, nh, T, hs)로 둠!
+        # 하지만 이걸 그대로 떠올리기엔 어려우므로
+        # 생각하기 편하게 (B, T, hs) x nh로 생각해도 됨!
+
+        # C를 쪼개고나서 T열과 nh열을 바꿈(transpose)
+        # 바꾸는 이유는 nh가 batch dimension처럼 작동하도록 하기 위함!
+        # 즉, B x nh 개의 (T, hs)가 존재하는 것처럼 연산하기 위함
+        # 이렇게 하면 pytorch가 B와 nh에 대해 병렬로 연산함
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        # attention = Softmax(q . k / sqrt(hs) )
+        # 내적 후 정규화
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+
+        # 계산한 attention을 masking table을 이용해 masking
+        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+
+        # Softmax로 확률 분포로 변환, 최종 어텐션 계산
+        att = F.softmax(att, dim=-1)
+
+        # 계산한 어텐션을 value에 곱함으로써 최종 output 계산
+        y = att @ v
+
+        # (B, T, C) shape으로 복구
+        y = y.transpose(1, 2).contiguous().view(B, T, C) 
+
+        # 마지막으로 Linear 한번 거침
+        y = self.proj_c(y)
+
+        return y
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Decoder Block 내부의 Feed-Forward Layer Class
+class MLP(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+
+        # 기존 임베딩 -> 4배 확장장
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
+
+        # GELU 활성화 함수 정의
+        # 2가지 버전이 존재. 
+
+        # 예전에는 tensorflow로 GELU 구현 시 사용한 erf 함수가 느렸음!
+        # 그래서 GPT 개발 당시에는 tanh를 이용한 근사함수를 썼음
+
+        # 현재 실제 구현에는 그럴 필요가 없지만 논문 재현을 위해 근사 함수 사용용
+
+        # 자세히는 GELU 논문 살펴볼 것!
+        self.gelu = nn.GELU(approximate='tanh')
+
+        # 4배 확장 -> 기존 임베딩
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
 
 # Transformer Decoder Block Class
 class Block(nn.Module):
@@ -39,7 +163,7 @@ class Block(nn.Module):
             # 정규화 하고나서 레이어를 통과시키면 해당 레이어가 학습 안정성이 높음!
 
             # 2. residual path와 non-residual path의 명확한 구분
-            # residual path 쪽은 정규화가 안되므로 원본 정보 보존 가능!
+            # residual path 쪽은 정규화가 안되므로 원본 정보 보존 가능! -> clean residual path
             # residual connection의 의의를 잘 지킴!
 
             x = x + self.attn(self.ln_1(x)) 
