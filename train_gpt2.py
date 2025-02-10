@@ -214,3 +214,30 @@ class GPT(nn.module):
         # 768차원의 임베딩 벡터를 vocab의 모든 토큰에 대한 가중치로 변환환
         # 이 값을 softmax에 통과시켜 각 토큰 별 확률로 변환
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+
+    # pre-train 가중치 불러오는 함수
+    # 길긴 하지만 GPT 공부에 그리 중요한 코드는 아닙니다. 
+    @classmethod
+    def from_pretrained(cls, model_type):
+        """HuggingFace의 GPT-2 모델 가중치를 로드합니다."""
+
+        # 우리가 불러올 모델 타입이 이 중에 해당하는지 확인
+        assert model_type in {'gpt-2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+
+        from transformers import GPT2LMHeadModel
+        print(f'pre-trained gpt {model_type}(으)로부터 가중치 로드 중...')
+
+        # 모델 타입 별 설정 변수 지정
+        config_args = {
+            'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),
+            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024),
+            'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280),
+            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600),
+        }[model_type]
+
+        config_args['vocab_size'] = 50257
+        config_args['block_size'] = 1024
+
+        # 위 설정변수를 이용해 GPT 모델 생성
+        config = GPTConfig(**config_args) # 
