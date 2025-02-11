@@ -92,18 +92,6 @@ class CausalSelfAttention(nn.Module):
 
         return y
 
-
-
-
-
-
-
-
-
-
-
-
-
 # Decoder Block 내부의 Feed-Forward Layer Class
 class MLP(nn.Module):
 
@@ -182,12 +170,12 @@ class Block(nn.Module):
 
 # GPT 설정 정보 class
 @dataclass
-class GPTConfig:
-    block_size: int = 256
-    vocab_size: int = 65
-    n_layer: int = 6
-    n_head : int = 6
-    n_embd: int = 384
+class GPTConfig: # GPT-2에 맞게 설정
+    block_size: int = 1024
+    vocab_size: int = 50257
+    n_layer: int = 12
+    n_head : int = 12
+    n_embd: int = 768
 
 # GPT class
 class GPT(nn.Module):
@@ -269,6 +257,7 @@ class GPT(nn.Module):
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
 
         from transformers import GPT2LMHeadModel
+
         print(f'pre-trained gpt {model_type}(으)로부터 가중치 로드 중...')
 
         # 모델 타입 별 설정 변수 지정
@@ -297,7 +286,7 @@ class GPT(nn.Module):
         sd_keys = sd.keys()
 
         # 생성한 dict 원소 중 attn_bias는 우리가 직접 만들었으므로 제외. 
-        sd_keys = [k for k in sd_keys if not k.endswith('attn.bias')]
+        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')]
 
         # HuggingFace의 GPT 모델 로드 
         model_hf = GPT2LMHeadModel.from_pretrained(model_type)
@@ -309,10 +298,10 @@ class GPT(nn.Module):
         sd_keys_hf = sd_hf.keys()
         
         # 마스킹 테이블 제외
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('attn.masked_bias')]
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')]
         
         # 얘도 같은 이유로 제외
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('attn.bias')]
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')]
 
         # ------------ 추가 작업: transpose 된 weight 되돌리기 ------------
         # HuggingFace에선 tensorflow로 개발되어 있어서 
@@ -354,18 +343,24 @@ class GPT(nn.Module):
 # 직접 문장 생성해보기
 if __name__ == '__main__':
 
-    # 
+    # 생성할 문장 수와 문장 별 생성할 토큰 수 지정.
     num_return_sequences = 5
     max_length = 30
 
-    # 모델 불러오기 & 추론 모드로 설정
-    model = GPT.from_pretrained('gpt2')
-    model.eval()
+    # device 결정 (cpu / gpu / mps)
+    device = 'cpu'
     if torch.cuda.is_available():
         device = 'cuda'
-    else:
-        device = 'cpu'
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = 'mps'
+    print(f'사용 디바이스: {device}')
+
+    # 모델 불러오기 & 추론 모드로 설정
+    #model = GPT.from_pretrained('gpt2') # 사전학습된 가중치 로드하여 생성
+    model = GPT(GPTConfig()) # 기본 설정으로 램덤 초기화 모델 생성, 이걸 그대로 쓰면 결과 엉망!
+    model.eval()
     model.to(device)
+    print(f'모델 설정: {model.config}')
 
     # 문장 준비 & 인코딩
     import tiktoken
