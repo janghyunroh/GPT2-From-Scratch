@@ -6,6 +6,7 @@ from torch.nn import functional as F
 import math
 import tiktoken
 import sys
+import time
 
 # GPT
 # - 토큰 임베딩
@@ -34,6 +35,7 @@ class CausalSelfAttention(nn.Module):
         # output projection
         # 
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1 # 아래 가중치 초기화에서 확인
 
         # regularization
         self.n_head = config.n_head
@@ -116,6 +118,8 @@ class MLP(nn.Module):
 
         # 4배 확장 -> 기존 임베딩
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+
+        self.c_proj.NANOGPT_SCALE_INIT = 1 # 아래 가중치 초기화에서 확인
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -221,6 +225,40 @@ class GPT(nn.Module):
         # A. "시멘틱하게 유사한 토큰은 최종 예측에서 비슷한 확률 분포를 가질 것"이라는 아이디어!
         # 이 아이디어를 기반으로 GPU 자원을 아낄 수 있음!(거의 30퍼센트)
         self.transformer.wte.weight = self.lm_head.weight # 포인터 수정
+
+        # minor fix 2 - 가중치 초기화 방법 변경
+        # GPT 2의 가중치 초기화 방식을 최대한 재현
+        self.apply(self._init_weights)
+    
+    # module이 주어졌을 때 가중치 초기화 기법 지정
+    # residual 쪽은 sqrt(N)으로 나누어주어야 함(가중치 누적 방지)
+    # Linear는
+    # Embedding은 
+    # Layer Norm은 기본으로 충분
+    def _init_weights(self, module):
+        
+        # 1. Linear Layer의 경우
+        if isinstance(module, nn.Linear):
+            
+            std = 0.02 # ~= 1 / sqrt(n_embd)
+
+            # 1 - 1. residual connection의 경우 - sqrt(n)으로 나누어줘야 함!
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+
+                # layer 수만큼 나눠줘야 함!
+                # transformer block은 attnetion 1번, MLP 1번 총 2번의 n_layer 거치므로
+                # sqrt(2 * n_layer)로 나눠줘야 함!
+                std *= (2 * self.config.n_layer) ** -0.5
+
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std) # 표준편차 0.02
+            
+            # 1 - 2. bias가 있으면 0으로 초기화!
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        
+        # 2. Embedding Layer의 경우
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02) # 표준편차 0.02
     
     # forward 함수 정의
     def forward(self, idx, targets=None): #idx: (B, T) shape의 입력
@@ -422,6 +460,10 @@ if __name__ == '__main__':
         device = 'mps'
     print(f'사용 디바이스: {device}')
 
+    torch.manual_seed(1337)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1337)
+
     # ---------- 직접 초미니 데이터셋 로드하기 ----------
 
     # # 데이터 batch 구성하기
@@ -449,6 +491,8 @@ if __name__ == '__main__':
     # --------------------------------------------------
     train_loader = DataLoaderLite(B=4, T=32)
 
+    torch.set_float32_matmul_precision('high')
+
     # 모델 불러오기 & 추론 모드로 설정
     #model = GPT.from_pretrained('gpt2') # 사전학습된 가중치 로드하여 생성
     model = GPT(GPTConfig()) # 기본 설정으로 램덤 초기화 모델 생성, 이걸 그대로 쓰면 결과 엉망!
@@ -475,6 +519,9 @@ if __name__ == '__main__':
     # 오버피팅이 가능한지 확인해보기
     for i in range(50): # 총 50 epoch 돌아보기
 
+        # 시간재기
+        t0 = time.time()
+
         # 새 batch 생성
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
@@ -483,7 +530,12 @@ if __name__ == '__main__':
         logits, loss = model(x, y)
         loss.backward()
         optimizer.step()
-        print(f'step {i}, loss: {loss.item()}')
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t1 = time.time()
+        dt = (t1 - t0) * 1000 # 걸린 시간 밀리 초 단위로 기록
+        print(f'step {i}, loss: {loss.item()}, dt: {dt:.2f}ms')
 
 
     sys.exit(0)
