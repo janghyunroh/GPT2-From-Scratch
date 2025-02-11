@@ -226,7 +226,31 @@ class GPT(nn.Module):
         # Block Size에 맞게 입력이 들어왔는지 확인
         assert T <= self.config.block_size, f"{T}길이의 시퀀스는 Forwarding이 불가능합니다. Block size는 {self.config.block_size}이며 입력은 이보다 작아야 합니다. "
 
+        # 위치 임베딩과 토큰 임베딩 생성
 
+        # 위치에 따라 증가하는 배열 생성
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # (T)
+
+        # pos 배열로 위치 임베딩 생성
+        pos_emb = self.transformer.wpe(pos) # (T, C), C = n_embd
+
+        # idx로 토큰 임베딩 생성
+        tok_emb = self.transformer.wte(idx) # (B, T, C)
+
+        # 최종 임베딩 생성
+        x = tok_emb + pos_emb # (B, T, C)
+
+        # 디코더 블럭 통과
+        for block in self.transformer.h:
+            x = block(x) # (B, T, C)
+        
+        # 마지막 Layer Norm 통과
+        x = self.transformer.ln_f(x) # (B, T< C)
+
+        # 마지막 Linear Layer 통과
+        logits = self.lm_head(x) # (B, T, Vocab Size)
+
+        return logits # 이 logit을 softmax 통과시키고 vocab lookup해서 토큰 생성
 
     # pre-train 가중치 불러오는 함수
     # 길긴 하지만 GPT 공부에 그리 중요한 코드는 아닙니다. 
@@ -319,5 +343,27 @@ class GPT(nn.Module):
         return model
 
 
-model = GPT.from_pretrained('gpt2')
-print('완료!')
+
+
+#
+if __name__ == '__main__':
+
+    # model = GPT.from_pretrained('gpt2')
+    # print('완료!')
+
+    num_return_sequences = 5
+    max_length = 30
+
+    model = GPT.from_pretrained('gpt2')
+    model.eval()
+    model.to('cuda')
+
+    # prefix tokens
+    import tiktoken
+    enc = tiktoken.get_encoding('gpt2')
+
+    tokens = enc.encode("Hello, I'm a language model,")
+
+    tokens = torch.tensor(tokens, dtype=torch.long)
+    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+    x = tokens.to('cuda')
