@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from transformers import GPT2LMHeadModel
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import math
-
+import tiktoken
+import sys
 
 # GPT
 # - 토큰 임베딩
@@ -263,7 +265,7 @@ class GPT(nn.Module):
         # 우리가 불러올 모델 타입이 이 중에 해당하는지 확인
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
 
-        from transformers import GPT2LMHeadModel
+        
 
         print(f'pre-trained gpt {model_type}(으)로부터 가중치 로드 중...')
 
@@ -346,6 +348,55 @@ class GPT(nn.Module):
 
 
 
+# 제대로 된 학습을 위한 데이터 로더 정의
+class DataLoaderLite:
+
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+
+        # 텍스트 로딩
+        with open('./datas/input.txt', 'r') as f:
+            text = f.read()
+        
+        # 
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+
+        print(f'loaded {len(self.tokens)} tokens')
+        print(f'1 epoch = {len(self.tokens) // (B * T)} batches')
+
+        # state
+        # batch를 구성할 현재 위치
+        # batch는 텍스트의 맨 처음부터 batch size만큼의 토큰을 하나로 구성하게 됨.
+        # 즉 B * T만큼 시작 인덱스(current_position)를 이동시키면서 해당 지점에서부터 B * T + 1개만큼의 토큰을 
+        # 하나의 batch로 구성!
+
+        # + 1을 하는 이유는 아래에서 쓰던 마지막 토큰 복사 
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+
+        # '그 기법'
+        buf = self.tokens[self.current_position : self.current_position + B * T + 1]
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
+
+        # current position 이동
+        self.current_position += B * T
+
+        # 범위를 벗어나면 0으로 돌아옴
+        # Q. 이렇게 하면 텍스트 마지막 부분에 B*T보다 작은 양만큼의 토큰이 영원히 학습이 안되는 문제가 있지 않나?
+        if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_position = 0
+        
+        return x, y
+
+
+
+
 
 # 직접 문장 생성해보기
 if __name__ == '__main__':
@@ -362,29 +413,32 @@ if __name__ == '__main__':
         device = 'mps'
     print(f'사용 디바이스: {device}')
 
+    # ---------- 직접 초미니 데이터셋 로드하기 ----------
 
-    # 데이터 batch 구성하기
-    # 데이터 불러와서 인코딩
-    import tiktoken
-    enc = tiktoken.get_encoding('gpt2')
-    with open('./datas/input.txt', 'r') as f:
-        text = f.read()
-    text = text[:1000]
-    tokens = enc.encode(text)
+    # # 데이터 batch 구성하기
+    # # 데이터 불러와서 인코딩
+    # enc = tiktoken.get_encoding('gpt2')
+    # with open('./datas/input.txt', 'r') as f:
+    #     text = f.read()
+    # text = text[:1000]
+    # tokens = enc.encode(text)
 
-    # batch의 x, y 구성하기
+    # # batch의 x, y 구성하기
 
-    # y를 한 칸 밀린 x로 구성하는 아주 간단한 기법
-    # 인코딩의 마지막을 복사한 배열을 하나 만들고
-    # x는 처음부터 마지막 직전까지
-    # Y는 처음 것 다음부터 마지막까지로 구성
-    B, T = 4, 32
-    buf = torch.tensor(tokens[:B * T + 1])
+    # # y를 한 칸 밀린 x로 구성하는 아주 간단한 기법
+    # # 인코딩의 마지막을 복사한 배열을 하나 만들고
+    # # x는 처음부터 마지막 직전까지
+    # # Y는 처음 것 다음부터 마지막까지로 구성
+    # B, T = 4, 32
+    # buf = torch.tensor(tokens[:B * T + 1])
 
-    # 얘도 device로 옮겨야!
-    buf = buf.to(device)
-    x = buf[:-1].view(B, T)
-    y = buf[1:].view(B, T)
+    # # 얘도 device로 옮겨야!
+    # buf = buf.to(device)
+    # x = buf[:-1].view(B, T)
+    # y = buf[1:].view(B, T)
+
+    # --------------------------------------------------
+    train_loader = DataLoaderLite(B=4, T=32)
 
     # 모델 불러오기 & 추론 모드로 설정
     #model = GPT.from_pretrained('gpt2') # 사전학습된 가중치 로드하여 생성
@@ -410,7 +464,12 @@ if __name__ == '__main__':
     
     # 저 (4, 32)짜리 하나의 batch에 대한 학습 시작
     # 오버피팅이 가능한지 확인해보기
-    for i in range(50):
+    for i in range(50): # 총 50 epoch 돌아보기
+
+        # 새 batch 생성
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+
         optimizer.zero_grad()
         logits, loss = model(x, y)
         loss.backward()
@@ -418,7 +477,7 @@ if __name__ == '__main__':
         print(f'step {i}, loss: {loss.item()}')
 
 
-    import sys; sys.exit(0)
+    sys.exit(0)
     # ---------- 디버깅용 ----------
 
     model.eval()
@@ -426,7 +485,6 @@ if __name__ == '__main__':
     print(f'모델 설정: {model.config}')
 
     # 문장 준비 & 인코딩
-    import tiktoken
     enc = tiktoken.get_encoding('gpt2')
     tokens = enc.encode("Hello, I'm a language model,")
 
