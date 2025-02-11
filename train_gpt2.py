@@ -212,7 +212,7 @@ class GPT(nn.Module):
 
     
     # forward 함수 정의
-    def forward(self, idx): #idx: (B, T) shape의 입력
+    def forward(self, idx, targets=None): #idx: (B, T) shape의 입력
         
         # 입력 크기
         B, T = idx.size()
@@ -244,7 +244,14 @@ class GPT(nn.Module):
         # 마지막 Linear Layer 통과
         logits = self.lm_head(x) # (B, T, Vocab Size)
 
-        return logits # 이 logit을 softmax 통과시키고 vocab lookup해서 토큰 생성
+        # loss 계산(Cross-Entropy)
+        loss = None
+        if targets is not None: 
+            # cross_entropy 함수는 2차 이하의 텐서만 처리 가능.
+            # 따라서 flatten 해서 계산
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+
+        return logits, loss # 이 logit을 softmax 통과시키고 vocab lookup해서 토큰 생성
 
     # pre-train 가중치 불러오는 함수
     # 길긴 하지만 GPT 공부에 그리 중요한 코드는 아닙니다. 
@@ -355,9 +362,65 @@ if __name__ == '__main__':
         device = 'mps'
     print(f'사용 디바이스: {device}')
 
+
+    # 데이터 batch 구성하기
+    # 데이터 불러와서 인코딩
+    import tiktoken
+    enc = tiktoken.get_encoding('gpt2')
+    with open('./datas/input.txt', 'r') as f:
+        text = f.read()
+    text = text[:1000]
+    tokens = enc.encode(text)
+
+    # batch의 x, y 구성하기
+
+    # y를 한 칸 밀린 x로 구성하는 아주 간단한 기법
+    # 인코딩의 마지막을 복사한 배열을 하나 만들고
+    # x는 처음부터 마지막 직전까지
+    # Y는 처음 것 다음부터 마지막까지로 구성
+    B, T = 4, 32
+    buf = torch.tensor(tokens[:B * T + 1])
+
+    # 얘도 device로 옮겨야!
+    buf = buf.to(device)
+    x = buf[:-1].view(B, T)
+    y = buf[1:].view(B, T)
+
     # 모델 불러오기 & 추론 모드로 설정
     #model = GPT.from_pretrained('gpt2') # 사전학습된 가중치 로드하여 생성
     model = GPT(GPTConfig()) # 기본 설정으로 램덤 초기화 모델 생성, 이걸 그대로 쓰면 결과 엉망!
+    model.to(device)
+    # ---------- 훈련 과정 개발 위한 디버깅용 ----------
+    
+    # ---------- 1. loss 계산 잘 되는지 확인 ----------
+    #logits, loss = model(x, y)
+    #print(logits.shape)
+
+    # 램덤 초기화가 잘 된 기준: 최종 토큰 예측이 모든 토큰에 대한 균등 분포
+    # 균등 분포일 경우 Cross Entropy = -ln(1/vocab_size) ~= -10.8
+    #print(loss)
+    # 훈련 하지 않은 지금 대략 -11로 비슷한 모습
+    
+    # --------------------------------------------------
+
+    # ---------- 2. Optimizer 정의 및 학습 ----------
+
+    # AdamW 옵티마이저 사용
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    
+    # 저 (4, 32)짜리 하나의 batch에 대한 학습 시작
+    # 오버피팅이 가능한지 확인해보기
+    for i in range(50):
+        optimizer.zero_grad()
+        logits, loss = model(x, y)
+        loss.backward()
+        optimizer.step()
+        print(f'step {i}, loss: {loss.item()}')
+
+
+    import sys; sys.exit(0)
+    # ---------- 디버깅용 ----------
+
     model.eval()
     model.to(device)
     print(f'모델 설정: {model.config}')
