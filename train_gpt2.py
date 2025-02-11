@@ -380,23 +380,32 @@ if __name__ == '__main__':
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
 
+    # 토큰 생성
     while x.size(1) < max_length: # T < max_length
 
         with torch.no_grad():
 
             # logit 계산
-            logits = model(x) # (B, T, Vocab_size)
+            logits = model(x) # (B=5, T=1, 2, ...(루프마다 다름), Vocab_size)
 
             # T방향의 마지막 logit(가장 최근 토큰)만 가져옴
             # 상당히 비효율적인 샘플링이긴 함...
-            logits = logits[:, -1, :] # (B, T[-1], Vocab_size)
+            logits = logits[:, -1, :] # (5, 1, Vocab_size)
             
-            probs = F.softmax(logits, dim=-1) # Softmax로 확률 추출
+            # Softmax로 확률 추출
+            probs = F.softmax(logits, dim=-1) # (5, Vocab_size)
 
-            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+            # 확률이 높은 상위 50개 토큰만 추출
+            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # (5, 50)확률값, (5, 50) 인덱스
 
-            ix = torch.multinomial(topk_probs, 1)
+            # 상위 50개의 확률값을 가지고 재정규화(합이 1이 되도록)한 뒤 
+            # 시뮬레이션으로 하나 뽑기
+            # 함수 결과는 50개에서 뽑은 하나의 인덱스(Vocab의 인덱스 아님!!!)
+            # multinimail 함수에 대한 자세한 건 공식 문서를 확인할 것!
+            ix = torch.multinomial(topk_probs, 1) # (5, 1)
 
-            xcol = torch.gather(topk_indices, -1, ix)
-
-            x = torch.cat((x, xcol), dim=1)
+            # (5, 50) 인덱스 텐서에서 50짜리 방향에서 ix위치의 인덱스 추출
+            xcol = torch.gather(topk_indices, -1, ix) # (5, 1)
+            
+            # x의 뒤에 이어붙이기
+            x = torch.cat((x, xcol), dim=1) 
