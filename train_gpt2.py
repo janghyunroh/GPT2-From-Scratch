@@ -212,6 +212,15 @@ class GPT(nn.Module):
         # 이 값을 softmax에 통과시켜 각 토큰 별 확률로 변환
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+        # minor fix - 가중치 공유 scheme  
+        # 트랜스포머와 GPT2에선 디코더의 token embedding layer와 softmax 전 최종 linear layer를 
+        # 완전히 같은 걸 씀!
+        # 단순히 가중치가 같은 것을 넘어서 아예 동일한 텐서를 사용함(동일 포인터)
+
+        # Q. 왜 그럴까?
+        # A. "시멘틱하게 유사한 토큰은 최종 예측에서 비슷한 확률 분포를 가질 것"이라는 아이디어!
+        # 이 아이디어를 기반으로 GPU 자원을 아낄 수 있음!(거의 30퍼센트)
+        self.transformer.wte.weight = self.lm_head.weight # 포인터 수정
     
     # forward 함수 정의
     def forward(self, idx, targets=None): #idx: (B, T) shape의 입력
