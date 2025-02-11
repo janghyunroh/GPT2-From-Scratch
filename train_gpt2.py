@@ -527,7 +527,14 @@ if __name__ == '__main__':
         x, y = x.to(device), y.to(device)
 
         optimizer.zero_grad()
-        logits, loss = model(x, y)
+
+        if torch.cuda.is_available():
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+        
+        else:
+            logits, loss = model(x, y)
+        
         loss.backward()
         optimizer.step()
 
@@ -535,7 +542,8 @@ if __name__ == '__main__':
             torch.cuda.synchronize()
         t1 = time.time()
         dt = (t1 - t0) * 1000 # 걸린 시간 밀리 초 단위로 기록
-        print(f'step {i}, loss: {loss.item()}, dt: {dt:.2f}ms')
+        tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
+        print(f'step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}')
 
 
     sys.exit(0)
