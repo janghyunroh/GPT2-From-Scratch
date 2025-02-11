@@ -88,7 +88,7 @@ class CausalSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, T, C) 
 
         # 마지막으로 Linear 한번 거침
-        y = self.proj_c(y)
+        y = self.c_proj(y)
 
         return y
 
@@ -127,6 +127,12 @@ class MLP(nn.Module):
         # 4배 확장 -> 기존 임베딩
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
 
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        return x
+    
 # Transformer Decoder Block Class
 class Block(nn.Module):
 
@@ -147,28 +153,28 @@ class Block(nn.Module):
         # 단순 매핑(map)
         self.mlp = MLP(config)
 
-        # 위 요소들로 네트워크를 실제로 구성해보자!
-        def forward(self, x):
+    # 위 요소들로 네트워크를 실제로 구성해보자!
+    def forward(self, x):
 
-            # 기존 구조: resiudal 분기 -> layer -> resudual 결합 -> layer norm
-            # LayerNorm(sublayer(x) + x)
+        # 기존 구조: resiudal 분기 -> layer -> resudual 결합 -> layer norm
+        # LayerNorm(sublayer(x) + x)
 
-            # 새로운 구조: residual 분기 -> layer norm -> layer -> residual 결합합
-            # x + sublayer(LayerNorm(x))
+        # 새로운 구조: residual 분기 -> layer norm -> layer -> residual 결합합
+        # x + sublayer(LayerNorm(x))
 
-            # 왜 이렇게 하는가?
+        # 왜 이렇게 하는가?
 
-            # 1. 기울기 소실을 더 잘 해결
-            # 가중치 업데이트를 하고나서(레이어를 통과하고 나서) 정규화하는 건 그 레이어한테 무쓸모!
-            # 정규화 하고나서 레이어를 통과시키면 해당 레이어가 학습 안정성이 높음!
+        # 1. 기울기 소실을 더 잘 해결
+        # 가중치 업데이트를 하고나서(레이어를 통과하고 나서) 정규화하는 건 그 레이어한테 무쓸모!
+        # 정규화 하고나서 레이어를 통과시키면 해당 레이어가 학습 안정성이 높음!
 
-            # 2. residual path와 non-residual path의 명확한 구분
-            # residual path 쪽은 정규화가 안되므로 원본 정보 보존 가능! -> clean residual path
-            # residual connection의 의의를 잘 지킴!
+        # 2. residual path와 non-residual path의 명확한 구분
+        # residual path 쪽은 정규화가 안되므로 원본 정보 보존 가능! -> clean residual path
+        # residual connection의 의의를 잘 지킴!
 
-            x = x + self.attn(self.ln_1(x)) 
-            x = x + self.mlp(self.ln_2(x))
-            return x
+        x = x + self.attn(self.ln_1(x)) 
+        x = x + self.mlp(self.ln_2(x))
+        return x
 
 
 
@@ -409,3 +415,10 @@ if __name__ == '__main__':
             
             # x의 뒤에 이어붙이기
             x = torch.cat((x, xcol), dim=1) 
+
+    
+    # 생성한 토큰들 출력
+    for i in range(num_return_sequences):
+        tokens = x[i, :max_length].tolist()
+        decoded = enc.decode(tokens)
+        print('>', decoded)
