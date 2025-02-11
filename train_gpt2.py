@@ -345,25 +345,58 @@ class GPT(nn.Module):
 
 
 
-#
+# 직접 문장 생성해보기
 if __name__ == '__main__':
 
-    # model = GPT.from_pretrained('gpt2')
-    # print('완료!')
-
+    # 
     num_return_sequences = 5
     max_length = 30
 
+    # 모델 불러오기 & 추론 모드로 설정
     model = GPT.from_pretrained('gpt2')
     model.eval()
-    model.to('cuda')
+    if torch.cuda.is_available():
+        device = 'cuda'
+    else:
+        device = 'cpu'
+    model.to(device)
 
-    # prefix tokens
+    # 문장 준비 & 인코딩
     import tiktoken
     enc = tiktoken.get_encoding('gpt2')
-
     tokens = enc.encode("Hello, I'm a language model,")
 
-    tokens = torch.tensor(tokens, dtype=torch.long)
-    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-    x = tokens.to('cuda')
+    # torch tensor로 만들기
+    tokens = torch.tensor(tokens, dtype=torch.long)  #(8)
+
+    # 5개로 복사
+    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
+
+    # device로 옮기기
+    x = tokens.to(device) # x : (5, 8)
+
+    # -------------- 생성 시작! --------------
+
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+
+    while x.size(1) < max_length: # T < max_length
+
+        with torch.no_grad():
+
+            # logit 계산
+            logits = model(x) # (B, T, Vocab_size)
+
+            # T방향의 마지막 logit(가장 최근 토큰)만 가져옴
+            # 상당히 비효율적인 샘플링이긴 함...
+            logits = logits[:, -1, :] # (B, T[-1], Vocab_size)
+            
+            probs = F.softmax(logits, dim=-1) # Softmax로 확률 추출
+
+            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+
+            ix = torch.multinomial(topk_probs, 1)
+
+            xcol = torch.gather(topk_indices, -1, ix)
+
+            x = torch.cat((x, xcol), dim=1)
