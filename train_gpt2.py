@@ -295,7 +295,7 @@ class GPT(nn.Module):
 
         # loss 계산(Cross-Entropy)
         loss = None
-        if targets is not None: 
+        if targets is not None: # inference가 아닌 train 단계인 경우
             # cross_entropy 함수는 2차 이하의 텐서만 처리 가능.
             # 따라서 flatten 해서 계산
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
@@ -497,6 +497,7 @@ if __name__ == '__main__':
     #model = GPT.from_pretrained('gpt2') # 사전학습된 가중치 로드하여 생성
     model = GPT(GPTConfig()) # 기본 설정으로 램덤 초기화 모델 생성, 이걸 그대로 쓰면 결과 엉망!
     model.to(device)
+    model = torch.compile(model)
     # ---------- 훈련 과정 개발 위한 디버깅용 ----------
     
     # ---------- 1. loss 계산 잘 되는지 확인 ----------
@@ -569,7 +570,8 @@ if __name__ == '__main__':
     # -------------- 생성 시작! --------------
 
     torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(42)
 
     # 토큰 생성
     while x.size(1) < max_length: # T < max_length
