@@ -96,6 +96,14 @@ class CausalSelfAttention(nn.Module):
 
         return y
 
+
+# pytorch compile 실험을 위한 GELU 활성화 함수
+# torch.compile이 없는 경우 GPU 메모리 read/write overhead가 이 연산 하나 하면서 엄청 발생!
+# 텐서가 GPU에 올라가있는 동안 이 연산을 다 마치고나서 GPU 메모리로 옮기도록 함!
+class TanhGELU(nn.Module):
+    def forward(self, input):
+        return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))
+
 # Decoder Block 내부의 Feed-Forward Layer Class
 class MLP(nn.Module):
 
@@ -114,6 +122,7 @@ class MLP(nn.Module):
         # 현재 실제 구현에는 그럴 필요가 없지만 논문 재현을 위해 근사 함수 사용용
 
         # 자세히는 GELU 논문 살펴볼 것!
+        # self.gelu = TanhGELU()
         self.gelu = nn.GELU(approximate='tanh')
 
         # 4배 확장 -> 기존 임베딩
@@ -497,6 +506,11 @@ if __name__ == '__main__':
     #model = GPT.from_pretrained('gpt2') # 사전학습된 가중치 로드하여 생성
     model = GPT(GPTConfig()) # 기본 설정으로 램덤 초기화 모델 생성, 이걸 그대로 쓰면 결과 엉망!
     model.to(device)
+
+    # torch.compile 사용
+    # 기본값인 eager mode를 사용하지 않고 compile함
+    # g++ 등의 c compiler 필요
+
     model = torch.compile(model)
     # ---------- 훈련 과정 개발 위한 디버깅용 ----------
     
